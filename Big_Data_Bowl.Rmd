@@ -1,0 +1,786 @@
+---
+title: "Big Data Bowl"
+author: "Alex Veroulis"
+date: "10/26/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading in data and making small edits
+```{r}
+
+setwd("~/Desktop/nfl-big-data-bowl-2022")
+
+library(dplyr)
+
+# player data
+players <- read.csv("players.csv")
+
+# game data
+games <- read.csv("games.csv")
+
+# DATA1: play data; 19979 plays total to start
+plays <- read.csv("plays.csv") 
+
+full_plays <- left_join(plays,games,by="gameId")
+
+# DATA2: only include punts
+plays_punt <- full_plays %>% dplyr::filter(specialTeamsPlayType == "Punt")
+
+# looking at punt results
+summary(as.factor(plays_punt$specialTeamsResult))
+
+# look for kinds of penalties; notice there are 5350 plays without penalties
+summary(as.factor(plays_punt$penaltyCodes))
+
+# there are 641 plays with penalties; penalty (641) and non-penalty (5350) plays add up to total number of plays (5991)
+length(which(as.factor(plays_punt$penaltyCodes) != "NA"))
+
+# storing indices for penalty plays
+penalty_index <- which(as.factor(plays_punt$penaltyCodes) != "NA")
+
+# DATA3: non-penalty punts
+punt_clean <- plays_punt[-penalty_index,]
+summary(as.factor(punt_clean$specialTeamsResult))
+
+
+# DATA4: filtering by desired results; total of 4330 plays kept
+punt_kicks <- punt_clean %>% filter(specialTeamsResult %in% c("Downed","Fair Catch","Muffed","Return"))
+  
+summary(as.factor(punt_kicks$specialTeamsResult))
+
+# making the response variable binary
+punt_kicks$Response[punt_kicks$specialTeamsResult %in% c("Downed","Fair Catch")] <- "No"
+punt_kicks$Response[punt_kicks$specialTeamsResult %in% c("Muffed","Return")] <- "Yes"
+
+# PFF data
+pff <- read.csv("PFFScoutingData.csv")
+
+#join new punts dataset with pff data by gameId and playId
+punt_pff <- left_join(punt_kicks,pff,by=c("gameId","playId"))
+
+
+# 2018 tracking data
+trk18 <- read.csv("tracking2018.csv")
+
+
+# 2019 tracking data
+trk19 <- read.csv("tracking2019.csv")
+
+
+# 2020 tracking data
+trk20 <- read.csv("tracking2020.csv")
+
+# play catalogs for each individual season with tracking data
+join2018 <- inner_join(punt_pff,trk18,by=c("gameId","playId"))
+join2019 <- inner_join(punt_pff,trk19,by=c("gameId","playId"))
+join2020 <- inner_join(punt_pff,trk20,by=c("gameId","playId"))
+
+# plays catalogs for all season from 2018-2020
+join_punts <- rbind(join2018,join2019)
+join_punts2 <- rbind(join_punts,join2020)
+
+```
+
+# Reducing data
+```{r}
+summary(join_punts2)
+library(dplyr)
+library(tidyr)
+
+# taking out unnecessary variables
+join_punts3 <- join_punts2 %>% dplyr::select(-c(kickBlockerId,penaltyCodes,penaltyJerseyNumbers,penaltyYards,passResult,kickoffReturnFormation))
+
+# decided to take out muffed punts; leaves us with 4196 plays
+join_punts4 <- join_punts3 %>% dplyr::filter(specialTeamsResult != "Muffed")
+summary(as.factor(join_punts4$specialTeamsResult))
+summary(as.factor(join_punts4$event))
+summary(as.factor(join_punts4$Response))
+
+```
+
+# Inspection of play events
+```{r}
+# Checking for miscellaneous events that don't belong
+
+# checking for event == kickoff; disregard as none
+u1 <- join_punts4 %>% dplyr::filter(event == "kickoff") %>% dplyr::select(c(gameId,playId)) %>% distinct()
+up1 <- join_punts4 %>% dplyr::filter(gameId=="2019100600",playId=="2337")
+summary(as.factor(up1$event))
+
+# checking for event == autoevent_kickoff; disregard as none
+u2 <- join_punts4 %>% dplyr::filter(event == "autoevent_kickoff") %>% dplyr::select(c(gameId,playId)) %>% distinct()
+
+up2 <- join_punts4 %>% dplyr::filter(gameId=="2020091304",playId=="116")
+summary(as.factor(up2$event))
+
+# checking for event == kick_received; disregard as none
+u3 <- join_punts4 %>% dplyr::filter(event == "kick_received") %>% dplyr::select(c(gameId,playId)) %>% distinct()
+
+up3 <- join_punts4 %>% dplyr::filter(gameId=="2018090903",playId=="1844") 
+
+# checking for event == kickoff_land (which is considered the same as punt_land, change to punt_land)
+up4 <- join_punts4 %>% dplyr::filter(gameId=="2018123015",playId=="2651")
+
+# checking for event == out_of_bounds; this is ok
+up5 <- join_punts4 %>% dplyr::filter(gameId=="2018090901",playId=="2632")
+
+# checking for event == pass_forward; change to none
+u6 <- join_punts4 %>% dplyr::filter(event == "pass_forward") %>% dplyr::select(c(gameId,playId)) %>% distinct()
+up6 <- join_punts4 %>% dplyr::filter(gameId == "2020111512",playId=="2109")
+
+# checking for event == play_action; change to none
+u7 <- join_punts4 %>% dplyr::filter(event == "play_action") %>% dplyr::select(c(gameId,playId)) %>% distinct()
+up7 <- join_punts4 %>% dplyr::filter(gameId == "2018093011",playId=="168")
+
+# checking for event == punt_blocked
+punt_blocks <- join_punts4 %>% dplyr::filter(event=="punt_blocked")
+# getting game and play Ids for these plays
+punt_block_ids <- punt_blocks %>% dplyr::select(c(gameId,playId)) %>% distinct()
+# extracting all frames for the specified plays
+pbsample <- join_punts4 %>% dplyr::filter(gameId %in% punt_block_ids$gameId & playId %in% punt_block_ids$playId)
+
+# REMOVING PUNT BLOCKS FROM join_punts4 
+join_punts5 <- join_punts4 %>% dplyr::filter(!(playDescription %in% pbsample$playDescription))
+# results in 4187 total plays
+jp5 <- join_punts5 %>% dplyr::select(gameId,playId) %>% distinct()
+summary(as.factor(join_punts5$event))
+
+
+# checking for event == punt_muffed
+punt_muffs <- join_punts5 %>% dplyr::filter(event=="punt_muffed")
+# getting game and play Ids for these plays
+punt_muffs_ids <- punt_muffs %>% dplyr::select(c(gameId,playId)) %>% distinct()
+# extracting all frames for the specified plays
+pmsample <- join_punts5 %>% dplyr::filter(gameId %in% punt_muffs_ids$gameId & playId %in% punt_muffs_ids$playId)
+
+# REMOVING MUFFS FROM join_punts5 to get final dataset
+join_punts6 <- join_punts5 %>% dplyr::filter(!(playDescription %in% pmsample$playDescription))
+# results in 4185 plays
+jp6 <- join_punts6 %>% dplyr::select(gameId,playId) %>% distinct()
+
+# checking for event == safety; this is ok since it's after the catch
+up8 <- join_punts6 %>% dplyr::filter(gameId=="2020122012",playId=="2492")
+
+summary(as.factor(join_punts6$event))
+
+#changing kickoff_land to punt_land
+join_punts6$event <- as.factor(join_punts6$event)
+levels(join_punts6$event)[levels(join_punts6$event)=="kickoff_land"] <- "punt_land"
+
+# changing events to NONE
+levels(join_punts6$event)[levels(join_punts6$event)=="kickoff"] <- "None"
+levels(join_punts6$event)[levels(join_punts6$event)=="autoevent_kickoff"] <- "None"
+levels(join_punts6$event)[levels(join_punts6$event)=="kick_received"] <- "None"
+levels(join_punts6$event)[levels(join_punts6$event)=="pass_forward"] <- "None"
+levels(join_punts6$event)[levels(join_punts6$event)=="play_action"] <- "None"
+
+
+```
+
+
+# Looking at the distribution of important frames and editing plays that have mislabeled events
+```{r}
+# critical frames
+
+# snaps (4156 plays)
+join_ballsnap <- join_punts6 %>% dplyr::filter(event == "ball_snap")
+plays_ballsnap <- join_ballsnap %>% dplyr::select(gameId,playId) %>% distinct()
+
+#punts (4180 plays)
+join_puntplays <- join_punts6 %>% dplyr::filter(event == "punt")
+plays_puntplays <- join_puntplays %>% dplyr::select(gameId,playId) %>% distinct()
+
+#fair catches (1534 plays)
+join_fair <- join_punts6 %>% dplyr::filter(event == "fair_catch")
+plays_fair <- join_fair %>% dplyr::select(gameId,playId) %>% distinct()
+
+
+#punt received (1899 plays)
+join_received <- join_punts6 %>% dplyr::filter(event == "punt_received")
+plays_received <- join_received %>% dplyr::select(gameId,playId) %>% distinct()
+
+#punt land (838 plays)
+join_land <- join_punts6 %>% dplyr::filter(event == "punt_land")
+plays_land <- join_land %>% dplyr::select(gameId,playId) %>% distinct()
+
+
+## INTERSECTIONS
+
+# 1.) fair catch and punt land intersection; punt_land as an erroneous event, must change to None
+fc_land <- inner_join(plays_land,plays_fair) # 2 plays
+
+join_punts6[which(join_punts6$gameId %in% fc_land$gameId & join_punts6$playId %in% fc_land$playId & join_punts6$event == "punt_land"),]$event <- "None"
+
+
+#############
+
+# 2.) fair catch and punt received intersection; punt_received as an erroneous event, must change to None
+fc_rec <- inner_join(plays_fair,plays_received) # 14 plays
+
+join_punts6[which(join_punts6$gameId %in% fc_rec$gameId & join_punts6$playId %in% fc_rec$playId & join_punts6$event == "punt_received"),]$event <- "None"
+
+
+#############
+
+# 3.) punt received and punt land intersection; looking for plays with a bounced return where a punt is received after the ball lands (127 plays), reassign as "no" for response variable
+received_land <- inner_join(plays_received,plays_land)
+
+# changing response variable to "No" for bounced returns, only considering the initial decision to catch/return or not 
+join_punts6[which(join_punts6$gameId %in% received_land$gameId & join_punts6$playId %in% received_land$playId),]$Response <- "No"
+
+# also have to change "punt received" events to "None" since we are only focusing on the punt landing
+join_punts6[which(join_punts6$gameId %in% received_land$gameId & join_punts6$playId %in% received_land$playId & join_punts6$event == "punt_received"),]$event <- "None"
+
+
+```
+
+
+# Creating and editing necessary variables
+```{r}
+# separating gunners
+final_ds <- join_punts6 %>% separate(gunners, c("gun1","gun2"),sep="; ") 
+
+# adding new variables to identify coverage and kick team members
+final_ds2 <- final_ds %>% mutate(tmabr =
+case_when(
+  team == "home" ~ homeTeamAbbr,
+  team == "away" ~ visitorTeamAbbr,
+  team == "football" ~ "football"
+),
+kr = ifelse(possessionTeam == tmabr,'kick','return'),
+tm_num = paste(tmabr,jerseyNumber),
+gunner_status = 
+  case_when(
+    tm_num == gun1 ~ 1,
+    tm_num == gun2 ~ 1,
+    TRUE ~ 0
+  ),returner_status = ifelse(returnerId == nflId,1,0))
+
+# changing classes of variables to factors
+final_ds2$quarter <- as.factor(final_ds2$quarter)
+final_ds2$season <- as.factor(final_ds2$season)
+final_ds2$Response <- as.factor(final_ds2$Response)
+final_ds2$snapDetail <- as.factor(final_ds2$snapDetail)
+final_ds2$kickType <- as.factor(final_ds2$kickType)
+final_ds2$kickDirectionIntended <- as.factor(final_ds2$kickDirectionIntended)
+final_ds2$kickDirectionActual <- as.factor(final_ds2$kickDirectionActual)
+final_ds2$kickContactType <- as.factor(final_ds2$kickContactType)
+final_ds2$position <- as.factor(final_ds2$position)
+final_ds2$team <- as.factor(final_ds2$team)
+final_ds2$playDirection <- as.factor(final_ds2$playDirection)
+final_ds2$kr <- as.factor(final_ds2$kr)
+final_ds2$gunner_status <- as.factor(final_ds2$gunner_status)
+final_ds2$returner_status <- as.factor(final_ds2$returner_status)
+
+
+# summary of response variable
+final_ds2plays <- final_ds2 %>% dplyr::select(gameId,playId,Response) %>% distinct()
+summary(final_ds2plays$Response) # 1746 returns, 2439 non-returns
+
+#change gameClock variable
+library(lubridate)
+library(stringr)
+final_ds2$gameClock <- substr(final_ds2$gameClock,1,5)
+final_ds2$gameClock <- lubridate::ms(final_ds2$gameClock)
+gcindex <- which(final_ds2$quarter %in% c(1,3))
+final_ds2$gameClock[gcindex] <- final_ds2$gameClock[gcindex] + lubridate::ms("15M 0S")
+summary(final_ds2$gameClock)
+
+# creating kickDirectionMatch variable (did the kick go in the intended direction?)
+final_ds2$kickDirectionMatch <- ifelse(final_ds2$kickDirectionIntended == final_ds2$kickDirectionActual,"yes","no")
+final_ds2$kickDirectionMatch <- as.factor(final_ds2$kickDirectionMatch)
+
+# creating scorediff variable (from perspective of returning team)
+final_ds2$scorediff <- numeric(nrow(final_ds2))
+
+# counting home team score as the return team score
+hrindex <- which(final_ds2$team == "home" & final_ds2$kr == "return")
+akindex <- which(final_ds2$team == "away" & final_ds2$kr == "kick")
+# score differential for home returners
+final_ds2$scorediff[c(hrindex,akindex)] <- final_ds2$preSnapHomeScore[c(hrindex,akindex)] - final_ds2$preSnapVisitorScore[c(hrindex,akindex)]
+
+# counting away team score as the return team score
+hkindex <- which(final_ds2$team == "home" & final_ds2$kr == "kick")
+arindex <- which(final_ds2$team == "away" & final_ds2$kr == "return")
+# score differential for away returners
+final_ds2$scorediff[c(hkindex,arindex)] <- final_ds2$preSnapVisitorScore[c(hkindex,arindex)] - final_ds2$preSnapHomeScore[c(hkindex,arindex)]
+
+# team == football as having NA score difference
+fnindex <- which(final_ds2$team == "football")
+# score differential as NA for tracking the football
+final_ds2$scorediff[fnindex] <- NA
+
+# converting scorediff to a numeric variable
+final_ds2$scorediff <- as.numeric(final_ds2$scorediff)
+
+# for simplicity, taking out frames capturing the football's movement
+final_ds2 <- final_ds2 %>% dplyr::filter(team != "football")
+```
+
+# further edits to data
+```{r}
+
+# a duplicate dataset
+final_ds3 <- final_ds2
+final_ds3$returnerId <- as.numeric(final_ds3$returnerId)
+# still has 4185 plays here
+fd3p <- final_ds3 %>% dplyr::select(gameId,playId) %>% distinct()
+
+
+# DELETING PLAYS WITHOUT A RETURNER; removing 766 plays, leaving 3419 plays
+final_clean4 <- final_ds3 %>% drop_na(returnerId)
+# game and play ids
+pnumber <- final_clean4 %>% dplyr::select(gameId,playId) %>% distinct()
+
+# change times to represent number of seconds before half
+final_clean4$gameClock <- round(period_to_seconds(final_clean4$gameClock))
+
+
+# taking out plays without a ball snap label
+snap_present <- final_clean4 %>% dplyr::filter(event == "ball_snap") %>% dplyr::select(gameId,playId) %>% distinct() #3397 plays
+
+#taking out plays without a punt label
+punt_present <- final_clean4 %>% dplyr::filter(event == "punt") %>% dplyr::select(gameId,playId) %>% distinct() #3415 plays
+
+snap_punt_present <- inner_join(snap_present,punt_present) #3393 plays
+
+#taking out plays without any return event
+return_present <- final_clean4 %>% dplyr::filter(event %in% c("punt_received","fair_catch","punt_land")) %>% dplyr::select(gameId,playId) %>% distinct() #3401 plays
+
+ # left with 3375 plays; comprehensive list of game ids and play ids I want to use 
+all_present <- inner_join(snap_punt_present,return_present)
+
+
+```
+
+
+# Looking at how to analyze a single play; contains the diffs function
+
+```{r}
+
+# EXPERIMENTING WITH A SINGLE PLAY (DEONTE HARRIS TOUCHDOWN)
+
+harris_return <- final_clean4 %>% dplyr::filter(gameId == "2019092211",playId == "218")
+
+str(harris_return)
+
+
+harris_defs <- harris_return %>% dplyr::filter(kr == "kick",position!= "P",event == "punt_received")
+
+y_order <- c(0,harris_defs$y[order(harris_defs$y)],53.3)
+
+# function that finds gaps between defenders given a frame
+diffs <- function(coords){
+  
+  gaps <- numeric(length(coords)-1)
+  
+  for(i in 1:length(gaps)){
+    gaps[i] <- coords[i+1] - coords[i]
+  }
+  
+  c(median_gap = median(gaps),largest_gap = max(gaps))
+}
+
+diffs(y_order)
+
+harris_snap <- harris_return %>% dplyr::filter(event == "ball_snap")
+
+
+```
+
+
+
+
+# Contains THE GRAND FUNCTION
+```{r}
+
+### THE GRAND FUNCTION: Returns crucial variables given a single play
+
+grand_fn <- function(gameId1,playId1,dataset){
+  
+  play1 <- dataset %>% dplyr::filter(gameId == gameId1,playId == playId1)
+  
+  # 1.) AT SNAP
+  snaptime <- play1 %>% dplyr::filter(event == "ball_snap") %>% dplyr::select(x,y,s,a,dis,o,dir,kr,gunner_status,returner_status,position,team,absoluteYardlineNumber)
+  
+  # returner info at the snap
+  snapreturner <- snaptime %>% dplyr::filter(returner_status == "1")
+  
+
+  # obtaining distance from returner to line of scrimmage
+      snapdist <- abs(snapreturner$x - snapreturner$absoluteYardlineNumber)
+
+  
+    
+  # important variables at the snap
+    snapvars <- list(responsevar = play1$Response[1],
+                gameId = mean(na.omit(play1$gameId)),
+                playId = mean(na.omit(play1$playId)),
+                scrimdist=as.numeric(snapdist),
+                quarter= play1$quarter[1],
+                abs_yrdline = mean(na.omit(play1$absoluteYardlineNumber)),
+                scorediff = mean(na.omit(play1$scorediff)),
+                gmClock = mean(play1$gameClock),
+                retid = play1$returnerId[1])
+    
+  #####################################
+  
+   # 2.) AT PUNT
+punttime <- play1 %>% dplyr::filter(event == "punt") %>% dplyr::select(x,y,s,a,dis,o,dir,kr,gunner_status,returner_status,position,team,absoluteYardlineNumber)
+    
+
+    puntvars <- list(klength = mean(na.omit(play1$kickLength)),
+                  snap_detail = as.factor(play1$snapDetail[1]),
+                  operation_time = play1$operationTime[1],
+                  h_time = play1$hangTime[1],
+                  ktype = as.factor(play1$kickType[1]),
+                  kmatch = as.factor(play1$kickDirectionMatch[1]))
+    
+    #####################################
+    
+  # 3.) AT FAIR CATCH / RETURN / PUNT LAND
+   
+       # frame statistics for all players at time of catch
+  returntime <- play1 %>% dplyr::filter(event %in% c("punt_received","fair_catch","punt_land")) %>% dplyr::select(x,y,s,a,dis,o,dir,kr,gunner_status,returner_status,position,team,absoluteYardlineNumber)
+    
+    # returner statistics at time of catch
+    returner_received <- returntime %>% dplyr::filter(returner_status == "1")
+    
+  # calculating returner's distance traveled from initial spot
+    if(nrow(returner_received) > 0 & nrow(snapreturner) > 0){
+        ret_dist_trav <- 
+          sqrt( (returner_received$x - snapreturner$x)^2 + (returner_received$y - snapreturner$y)^2 )
+    } else{
+      ret_dist_trav <- NA
+    }
+
+      
+# frame data for the kick coverage team minus the punter during the punt reception
+coverage <- returntime %>% dplyr::filter(kr == "kick",position!="P")
+
+
+  # a vector of coverage team distances from returner
+  current_dist <- numeric(nrow(coverage))
+  for(i in 1:nrow(coverage)){
+    current_dist[i] <- sqrt( (coverage[i,]$x - returner_received$x)^2 + (coverage[i,]$y - returner_received$y)^2 )
+  }
+
+# distance from sideline for returner
+
+ dis_side <- numeric(1)
+ if(returner_received$y <= 26.65){
+  dis_side <- returner_received$y
+ } else{
+    dis_side <- 53.3 - returner_received$y
+ }
+
+  # average coverage speeds and accelerations
+    Med_cspeed = median(coverage$s)
+    Med_cacc = median(coverage$a)
+  
+  # average returner speed and acceleration
+
+    Ret_speed = returner_received$s
+    Ret_acc = returner_received$a
+    Ret_angle = returner_received$dir
+
+  # ordered vector of y coordinates of kick coverage team to determine gaps
+      y_order <- c(0,coverage$y[order(coverage$y)],53.3)
+  
+
+  # named vector of new variables
+  newvars <- list(Med_cdist = as.numeric(median(current_dist)),
+    Closest_cdist=as.numeric(min(current_dist)),
+    Med_cspeed = Med_cspeed,
+    Med_cacc = Med_cacc,
+    Sideline_rdist = dis_side,
+    Ret_speed = Ret_speed,
+    Ret_acc = Ret_acc,
+    Ret_angle = Ret_angle,
+    Med_gaps = diffs(y_order)[[1]],
+    Max_gaps = diffs(y_order)[[2]])
+  
+  
+                      
+      # output vector
+   list(c(snapvars,puntvars,newvars,ret_dist_trav = ret_dist_trav))
+  
+
+}
+### END OF FUNCTION
+
+
+# FINAL TEST
+toy_ds <- data.frame(grand_fn(all_present$gameId[1],all_present$playId[1],final_clean4))
+
+
+custom <- data.frame(matrix(nrow=nrow(all_present),ncol=26))
+names(custom) <- names(toy_ds)
+
+custom$responsevar <- factor(custom$responsevar,levels=c("No","Yes"))
+custom$gameId <- as.numeric(custom$gameId)
+custom$playId <- as.numeric(custom$playId)
+custom$scrimdist <- as.numeric(custom$scrimdist)
+custom$quarter <- factor(custom$quarter,levels=c("1","2","3","4","5"))
+custom$abs_yrdline <- as.numeric(custom$abs_yrdline)
+custom$scorediff <- as.numeric(custom$scorediff)
+custom$gmClock <- as.numeric(custom$gmClock)
+custom$retid <- as.numeric(custom$retid)
+custom$klength <- as.numeric(custom$klength)
+custom$snap_detail <- factor(custom$snap_detail,levels=c("<",">","H","L","OK")) 
+custom$operation_time <- as.numeric(custom$operation_time)
+custom$h_time <- as.numeric(custom$h_time)
+custom$ktype <- factor(custom$ktype,levels=c("A","N","R"))
+custom$kmatch <- factor(custom$kmatch,levels=c("no","yes"))
+custom$Med_cdist <- as.numeric(custom$Med_cdist)
+custom$Closest_cdist <- as.numeric(custom$Closest_cdist)
+custom$Med_cspeed <- as.numeric(custom$Med_cspeed)
+custom$Med_cacc <- as.numeric(custom$Med_cacc)
+custom$Sideline_rdist <- as.numeric(custom$Sideline_rdist)
+custom$Ret_speed <- as.numeric(custom$Ret_speed)
+custom$Ret_acc <- as.numeric(custom$Ret_acc)
+custom$Ret_angle <- as.numeric(custom$Ret_angle)
+custom$Med_gaps <- as.numeric(custom$Med_gaps)
+custom$Max_gaps <- as.numeric(custom$Max_gaps)
+custom$ret_dist_trav <- as.numeric(custom$ret_dist_trav)
+
+
+# initializing dataset; GOAL: consolidate data into one dataset with all predictors for each play, then do modeling
+
+### MAIN DATASET TO BE USED FOR ANALYSIS
+  for(i in 1:nrow(all_present)){
+    custom[i,] <- data.frame(grand_fn(all_present$gameId[i],all_present$playId[i],final_clean4))
+  }
+
+
+
+```
+
+# EDA
+
+```{r}
+
+# taking out rows with NAs
+custom2 <- custom %>% drop_na()
+
+# making returnerId a factor
+custom2$retid <- as.factor(custom2$retid)
+
+# summary of dataset
+summary(custom2)
+
+# the response variable
+summary(custom2$responsevar)
+
+library(ggplot2)
+library(ggcorrplot)
+
+# Visual 1: plot of response variable by quarter
+fig1 <- ggplot(aes(x=responsevar,fill=quarter),data=custom2) +
+  geom_bar(col="black",position="stack") + xlab("Returner Decision") + ylab("Count") + ggtitle("Return Frequencies for Selected Punt Plays by Quarter, 2018-2020")
+
+fig1
+
+# data to support Visual 1 conclusions
+custom2_quarter <- custom2 %>% dplyr::select(responsevar,quarter) %>% group_by(quarter) %>% summarize(count=n())
+
+quarter_freqs <- custom2_quarter$count
+
+custom2_quarter2 <- custom2 %>% dplyr::select(responsevar,quarter) %>% group_by(responsevar,quarter) %>% summarize(count=n()) %>% arrange(quarter)
+
+custom2_quarter2$freq <- numeric(nrow(custom2_quarter2))
+
+for(i in 1:10){
+  if(custom2_quarter2$responsevar[i] == "No"){
+  custom2_quarter2$freq[i] <- custom2_quarter2$count[i] / 1641
+} else{
+  custom2_quarter2$freq[i] <- custom2_quarter2$count[i] / 1729
+}
+}
+
+
+
+# Visual 2: this time by kick type; seems like Aussie lead to fewer returns
+fig2 <- ggplot(aes(x=responsevar,fill=ktype),data=custom2) +
+  geom_bar(col="dark green",position="stack") + xlab("Returner Decision") + ylab("Count") + ggtitle("Return Frequencies for Selected Punt Plays by Quarter, 2018-2020")
+
+fig2
+
+# data supporting Visual 2 conclusions; shows an uneven distribution of punt types across return results
+custom2_kt <- custom2 %>% dplyr::select(responsevar,ktype) %>% group_by(responsevar,ktype) %>% summarize(count=n())
+
+
+
+# Visual 3: distribution return results based on field position and score differential
+fig3 <- ggplot(aes(x=abs_yrdline,y=scorediff,col=responsevar),data=custom2) + 
+  geom_point() + 
+  ylim(c(-45,45)) + ggtitle("Return Results based on Punt LOS and Score") + xlab("Line of Scrimmage of Punt (from 0-120 yards)") + ylab("Score Differential (Returner's Perspective)")
+
+
+# Visual 4: checking correlations between numeric predictors
+custom2_num <- custom2 %>% dplyr::select(-c(kmatch,ktype,retid,quarter,responsevar,snap_detail))
+
+fig4 <- ggcorrplot(round(cor(custom2_num),2),title="Correlations between Numerical Predictors")
+
+
+```
+
+
+# Modeling Process
+
+
+# Model 1: the full model
+```{r}
+
+# MODEL 1: the full model
+m1 <- glm(responsevar ~ .-gameId-playId-retid,data=custom2,family="binomial")
+summary(m1)
+
+
+# test train splits for cv; 2/3 train, 1/3 test
+library(caret)
+set.seed(313)
+train_index <- createDataPartition(custom2$responsevar, p = 2/3,list=FALSE)
+train <- custom2[train_index, ]
+test <- custom2[-train_index, ]
+
+# cross-validation
+tr_control <- trainControl(method = "cv", number=5, savePredictions=TRUE)
+cv1 <- train(responsevar ~ .-gameId-playId-retid,data=custom2, trControl = tr_control, method = "glm",family = "binomial")
+
+# finding cv accuracy
+cv1pred <- predict(cv1, newdata = test)
+cv1_table <- table(cv1pred, test$responsevar)
+sum(diag(cv1_table)) / sum(cv1_table) # accuracy of 0.838
+cv1_table
+library(car)
+Anova(m1, type = "II", test = "Wald")
+# notable variables include scrimdist, klength, h_time, ktype, kmatch, Closest_cdist, Med_cspeed, Med_cacc, Sideline_rdist, Ret_speed, Ret_acc, Med_gaps, Max_gaps, ret_dist_trav
+
+```
+
+
+# Model 2: reduced model based on correlated predictors and significant predictors
+```{r}
+
+# looking at vif factors of individual variables; quarter and gmClock both highest at >4, also they were not significant in the model, so I will remove them
+vif(m1)
+
+
+# MODEL 2: Reduced Version (taking out correlated predictors)
+
+# Decisions based on correlations, variable significance:
+# quarter and GmClock to be removed
+# ret_dist_trav over Sideline_rdist due to higher variable significance
+# Med_gaps over Max_gaps ""
+# Med_cspeed over Med_cacc ""
+
+# seeing how correlations change by removing variables
+custom3_num <- custom2_num %>% dplyr::select(-c(gameId,playId,gmClock,Sideline_rdist,Max_gaps,Med_cacc))
+
+ggcorrplot(round(cor(custom3_num),2),title="Correlations between Numerical Predictors")
+
+
+# MODEL 2: the reduced model
+m2 <- glm(responsevar ~ .-gameId-playId-retid-quarter-gmClock-Sideline_rdist-Max_gaps,data=custom2,family="binomial")
+
+summary(m2)
+
+# all vifs are below 4
+vif(m2)
+
+
+# cross-validation
+cv2 <- train(responsevar ~ .-gameId-playId-retid-quarter-gmClock-Sideline_rdist-Max_gaps,data=custom2, trControl = tr_control, method = "glm",family = "binomial")
+
+# finding cv accuracy
+cv2pred <- predict(cv2, newdata = test)
+cv2_table <- table(cv2pred, test$responsevar)
+sum(diag(cv2_table)) / sum(cv2_table) # accuracy of 0.841496
+
+cv2_table
+
+# anova tables
+anova(m2)
+Anova(m2, type = "II", test = "Wald")
+# notable variables include scrimdist, klength, h_time, ktype, kmatch, Closest_cdist, Med_cspeed, Med_cacc, Ret_speed, Ret_acc, ret_dist_trav
+
+# shows most significant variables in order
+important <- Anova(m2, type = "II", test = "Wald") %>% arrange(-Chisq)
+
+# 5 best predictors
+rownames(important)[1:5]
+```
+
+
+# Lasso Model
+
+```{r}
+library(glmnet)
+
+#convert training data to matrix format
+x <- model.matrix(responsevar ~ .-gameId-playId-retid-quarter-gmClock-Sideline_rdist-Max_gaps,data=train)
+#convert class to numerical variable
+y <- ifelse(train$responsevar=="Yes",1,0)
+
+# finding optimal lambda
+cv.lasso <- cv.glmnet(x,y,alpha=1,family="binomial",type.measure = "mse" )
+#plot result
+plot(cv.lasso)
+
+
+#best value of lambda
+lambda_1se <- cv.lasso$lambda.1se
+
+
+# test data conversion
+x2 <- model.matrix(responsevar ~ .-gameId-playId-retid-quarter-gmClock-Sideline_rdist-Max_gaps,data=test)
+
+# predictions
+lasso_pred <- predict(cv.lasso,newx=x2,s=lambda_1se,type="response")
+
+# making predictions back into "Yes" and "No"
+lasso_pred2 <- rep("No",nrow(test))
+lasso_pred2[lasso_pred > 0.5] <- "Yes"
+
+lasso_tab <- table(pred=lasso_pred2,true=test$responsevar)
+sum(diag(lasso_tab)) / sum(lasso_tab) # accuracy of 0.8388
+
+```
+
+
+# Ridge Model
+
+```{r}
+#convert training data to matrix format
+xridge <- model.matrix(responsevar ~ .-gameId-playId-retid-quarter-gmClock-Sideline_rdist-Max_gaps,data=train)
+#convert class to numerical variable
+yridge <- ifelse(train$responsevar=="Yes",1,0)
+
+# finding optimal lambda
+cv.ridge <- cv.glmnet(xridge,yridge,alpha=0,family="binomial",type.measure = "mse" )
+#plot result
+plot(cv.ridge)
+
+
+#best value of lambda
+lambda_1se_ridge <- cv.ridge$lambda.1se
+
+# test data conversion
+x2ridge <- model.matrix(responsevar ~ .-gameId-playId-retid-quarter-gmClock-Sideline_rdist-Max_gaps,data=test)
+
+# predictions
+ridge_pred <- predict(cv.ridge,newx=x2ridge,s=lambda_1se_ridge,type="response")
+
+# making predictions back into "Yes" and "No"
+ridge_pred2 <- rep("No",nrow(test))
+ridge_pred2[ridge_pred > 0.5] <- "Yes"
+
+ridge_tab <- table(pred=ridge_pred2,true=test$responsevar)
+sum(diag(ridge_tab)) / sum(ridge_tab) # accuracy of 0.833
+```
+
